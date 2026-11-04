@@ -677,7 +677,13 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
       log("info", "Bootstrap state reset by configuration", { key });
     }
     const forcedMode = normalizeBootstrapMode(cfg.bootstrapMode);
-    if (forcedMode) return { mode: forcedMode, needsBootstrap: true, forced: true };
+    if (forcedMode) return {
+      mode: forcedMode,
+      needsBootstrap: forcedMode === "new_only"
+        ? normalizeBootstrapMode(getBootstrapState(key)) !== "new_only"
+        : true,
+      forced: true,
+    };
     const stored = normalizeBootstrapMode(getBootstrapState(key));
     if (stored) return { mode: stored, needsBootstrap: false, forced: false };
     return { mode: "new_only", needsBootstrap: true, forced: false };
@@ -918,6 +924,11 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
       for (let i = 0; i < payloads.length; i += BULK_BATCH_SIZE) {
         const batch = payloads.slice(i, i + BULK_BATCH_SIZE);
         await uc.append(sessionContextId, batch);
+
+        // Confirmar apenas os eventos do lote aceito pela API.
+        for (const event of sessionEvents.slice(i, i + BULK_BATCH_SIZE)) {
+          markEventSeen(store, sourceName, event.eventId);
+        }
       }
 
       // update stats
@@ -1012,8 +1023,8 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
           noteSourceActivity(source.name, { lastEventType: normalized.eventType, lastSessionId: normalized.sessionId, lastAt: Date.now() });
 
           const eventId = sha256(`${source.name}|${cfg.host}|${cfg.userId}|${normalized.sessionId}|${fileId}|${i}`);
-          const isNew = markEventSeen(store, source.name, eventId);
-          if (!isNew) { bumpStat("deduped"); bumpSourceStat(source.name, "deduped"); continue; }
+          const isSeen = store.isEventSeen(seenEventStoreKey(source.name, eventId));
+          if (isSeen) { bumpStat("deduped"); bumpSourceStat(source.name, "deduped"); continue; }
 
           pendingEvents.push({ normalized, eventId, lineOffset: i, projectPath: fileProjectPath });
         }
@@ -1055,8 +1066,8 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
         noteSourceActivity(source.name, { lastEventType: normalized.eventType, lastSessionId: normalized.sessionId, lastAt: Date.now() });
 
         const eventId = sha256(`${source.name}|${cfg.host}|${cfg.userId}|${normalized.sessionId}|${fileId}|${lineOffset}|${sha256(line)}`);
-        const isNew = markEventSeen(store, source.name, eventId);
-        if (!isNew) { bumpStat("deduped"); bumpSourceStat(source.name, "deduped"); continue; }
+        const isSeen = store.isEventSeen(seenEventStoreKey(source.name, eventId));
+        if (isSeen) { bumpStat("deduped"); bumpSourceStat(source.name, "deduped"); continue; }
 
         pendingEvents.push({ normalized, eventId, lineOffset, projectPath: fileProjectPath });
       }

@@ -7,30 +7,32 @@ import type { MessageView } from '../message-view';
 import type { StorageAdapter } from '../storage';
 import { ok, err, type Result } from '../result';
 
-async function withSerializationRetry<T>(
-    operation: () => Promise<T>,
-): Promise<T> {
+const SERIALIZATION_FAILURE_CODE = '40001';
+const MAX_SERIALIZATION_RETRIES = 4;
+const RETRY_BASE_DELAY_MS = 50;
+const RETRY_JITTER_MS = 50;
+
+interface PgErrorLike {
+    code?: string;
+    cause?: { code?: string };
+}
+
+function isSerializationFailure(error: unknown): boolean {
+    const e = error as PgErrorLike | null;
+    return (e?.code ?? e?.cause?.code) === SERIALIZATION_FAILURE_CODE;
+}
+
+// Postgres SSI aborts one of two concurrent serializable txs with 40001; the client retries.
+async function withSerializationRetry<T>(operation: () => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
         try {
             return await operation();
         } catch (error) {
-            const e = error as {
-                code?: string;
-                cause?: { code?: string };
-            };
-
-            const code = e?.code ?? e?.cause?.code;
-
-            if (code !== '40001' || attempt >= 4) {
+            if (!isSerializationFailure(error) || attempt >= MAX_SERIALIZATION_RETRIES) {
                 throw error;
             }
-
-            const delay = 50 * 2 ** attempt
-                + Math.floor(Math.random() * 50);
-
-            await new Promise<void>(resolve =>
-                setTimeout(resolve, delay)
-            );
+            const delayMs = RETRY_BASE_DELAY_MS * 2 ** attempt + Math.floor(Math.random() * RETRY_JITTER_MS);
+            await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
         }
     }
 }

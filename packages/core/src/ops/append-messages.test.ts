@@ -234,6 +234,40 @@ describe('appendMessages', () => {
         assert.equal(result.message, 'Failed to append messages');
     });
 
+    it('retries a serialization failure without duplicating messages', async () => {
+        const storage = new MemoryStorage();
+        const project = await storage.insertProject('test');
+        const { rootId } = await seedContext(storage, project!.id);
+
+        let attempts = 0;
+        const originalTransaction = storage.transaction.bind(storage);
+
+        storage.transaction = async (fn, options) => {
+            attempts++;
+
+            if (attempts === 1) {
+                throw Object.assign(
+                    new Error('serialization failure'),
+                    { code: '40001' },
+                );
+            }
+
+            return originalTransaction(fn, options);
+        };
+
+        const result = await appendMessages(
+            storage, project!.id, rootId, { text: 'retry-test' },
+        );
+
+        assert.equal(result.ok, true);
+        assert.equal(attempts, 2);
+
+        const messages = storage.getAllNodes()
+            .filter(node => node.type === 'message');
+
+        assert.equal(messages.length, 1);
+    });
+
     // -- transaction: append runs under serializable isolation ----------------
 
     it('invokes the storage transaction with serializable isolation', async () => {

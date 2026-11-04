@@ -7,6 +7,34 @@ import type { MessageView } from '../message-view';
 import type { StorageAdapter } from '../storage';
 import { ok, err, type Result } from '../result';
 
+async function withSerializationRetry<T>(
+    operation: () => Promise<T>,
+): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await operation();
+        } catch (error) {
+            const e = error as {
+                code?: string;
+                cause?: { code?: string };
+            };
+
+            const code = e?.code ?? e?.cause?.code;
+
+            if (code !== '40001' || attempt >= 4) {
+                throw error;
+            }
+
+            const delay = 50 * 2 ** attempt
+                + Math.floor(Math.random() * 50);
+
+            await new Promise<void>(resolve =>
+                setTimeout(resolve, delay)
+            );
+        }
+    }
+}
+
 // -- intermediate tx outcome --------------------------------------------------
 // Mirrors the handler: the serializable tx returns either the success payload
 // or an error marker carrying the original HTTP status, resolved to a Result
@@ -26,7 +54,7 @@ export async function appendMessages(
     // (Postgres SSI makes one side fail with 40001; client retries).
     let outcome: AppendOutcome;
     try {
-        outcome = await storage.transaction<AppendOutcome>(async (tx) => {
+        outcome = await withSerializationRetry(() => storage.transaction<AppendOutcome>(async (tx) => {
             // context must exist under this project
             const root = await tx.findRootContext(projectId, contextId);
             if (!root) return { code: 'not_found', message: 'Context not found' };
@@ -64,9 +92,13 @@ export async function appendMessages(
             }));
 
             return { data, version: currentVersion };
-        }, { isolationLevel: 'serializable' });
-    } catch {
-        // any tx failure collapses to a single internal error
+        }, { isolationLevel: 'serializable' }));
+    } catch (error) {
+        const e = error as { code?: string; message?: string };
+        console.error('[UC_APPEND_ERROR]', JSON.stringify({
+            code: e?.code ?? null,
+            message: String(e?.message ?? 'unknown').slice(0, 300),
+        }));
         return err('internal', 'Failed to append messages');
     }
 

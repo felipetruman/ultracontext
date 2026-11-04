@@ -5,6 +5,7 @@ export { expandHome, truncateString, safeJsonParse, extractSessionIdFromPath, st
 export { parseClaudeCodeLine, extractClaudeTextContent } from "./agents/claude.mjs";
 export { parseCodexLine } from "./agents/codex.mjs";
 export { parseOpenClawLine } from "./agents/openclaw.mjs";
+export { parseOmpLine } from "./agents/omp.mjs";
 export { parseCursorLine } from "./agents/cursor.mjs";
 export { parseGeminiFile, extractGeminiTextContent } from "./agents/gemini.mjs";
 

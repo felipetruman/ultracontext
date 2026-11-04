@@ -7,6 +7,36 @@ import type { MessageView } from '../message-view';
 import type { StorageAdapter } from '../storage';
 import { ok, err, type Result } from '../result';
 
+const SERIALIZATION_FAILURE_CODE = '40001';
+const MAX_SERIALIZATION_RETRIES = 4;
+const RETRY_BASE_DELAY_MS = 50;
+const RETRY_JITTER_MS = 50;
+
+interface PgErrorLike {
+    code?: string;
+    cause?: { code?: string };
+}
+
+function isSerializationFailure(error: unknown): boolean {
+    const e = error as PgErrorLike | null;
+    return (e?.code ?? e?.cause?.code) === SERIALIZATION_FAILURE_CODE;
+}
+
+// Postgres SSI aborts one of two concurrent serializable txs with 40001; the client retries.
+async function withSerializationRetry<T>(operation: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await operation();
+        } catch (error) {
+            if (!isSerializationFailure(error) || attempt >= MAX_SERIALIZATION_RETRIES) {
+                throw error;
+            }
+            const delayMs = RETRY_BASE_DELAY_MS * 2 ** attempt + Math.floor(Math.random() * RETRY_JITTER_MS);
+            await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        }
+    }
+}
+
 // -- intermediate tx outcome --------------------------------------------------
 // Mirrors the handler: the serializable tx returns either the success payload
 // or an error marker carrying the original HTTP status, resolved to a Result
@@ -26,7 +56,7 @@ export async function appendMessages(
     // (Postgres SSI makes one side fail with 40001; client retries).
     let outcome: AppendOutcome;
     try {
-        outcome = await storage.transaction<AppendOutcome>(async (tx) => {
+        outcome = await withSerializationRetry(() => storage.transaction<AppendOutcome>(async (tx) => {
             // context must exist under this project
             const root = await tx.findRootContext(projectId, contextId);
             if (!root) return { code: 'not_found', message: 'Context not found' };
@@ -64,9 +94,13 @@ export async function appendMessages(
             }));
 
             return { data, version: currentVersion };
-        }, { isolationLevel: 'serializable' });
-    } catch {
-        // any tx failure collapses to a single internal error
+        }, { isolationLevel: 'serializable' }));
+    } catch (error) {
+        const e = error as { code?: string; message?: string };
+        console.error('[UC_APPEND_ERROR]', JSON.stringify({
+            code: e?.code ?? null,
+            message: String(e?.message ?? 'unknown').slice(0, 300),
+        }));
         return err('internal', 'Failed to append messages');
     }
 

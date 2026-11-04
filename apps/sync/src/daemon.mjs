@@ -18,7 +18,7 @@ import {
 import { acquireFileLock, resolveLockPath } from "./lock.mjs";
 import { redact } from "./redact.mjs";
 import {
-  parseClaudeCodeLine, parseCodexLine, parseGstackLine, parseOpenClawLine,
+  parseClaudeCodeLine, parseCodexLine, parseGstackLine, parseOpenClawLine, parseOmpLine,
   parseCursorLine, parseGeminiFile,
 } from "@ultracontext/parsers";
 import { boolFromEnv, expandHome, extractProjectPathFromFile, sha256, toInt } from "./utils.mjs";
@@ -517,6 +517,13 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
     }
     if (boolFromEnv(process.env.INGEST_OPENCLAW, true)) {
       sources.push({ name: "openclaw", enabled: true, globs: [openclawGlob], parseLine: parseOpenClawLine });
+    }
+
+    // omp / omp-dev (oh-my-pi) — pi-format sessions. `*/*.jsonl` = main sessions only:
+    // subagent logs live one level deeper (<session>/<name>.jsonl) and are large and noisy
+    const ompGlob = expandHome(process.env.OMP_GLOB ?? "~/.omp/agent/sessions/*/*.jsonl");
+    if (boolFromEnv(process.env.INGEST_OMP, true)) {
+      sources.push({ name: "omp", enabled: true, globs: [ompGlob], parseLine: parseOmpLine });
     }
 
     // cursor — same format as Claude but uses "role" instead of "type"
